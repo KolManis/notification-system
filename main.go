@@ -1,60 +1,137 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"math/rand/v2"
-	"sync"
+	"log"
+	"net/http"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/mux"
 )
 
 type Event struct {
-	ID        string
-	UserID    int
-	Action    string
-	Timestamp time.Time
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Action    string    `json:"action"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
-func worker(id int, events <-chan Event, wg *sync.WaitGroup) {
-	for event := range events {
-		fmt.Printf("  Воркер %d: начал обработку %s\n", id, event.Action)
-		time.Sleep(2 * time.Second) // работаем
-		fmt.Printf("  Воркер %d: закончил %s\n", id, event.Action)
-		wg.Done()
+var eventQueue = make(chan Event, 100)
+
+// Обработчик HTTP для приема событий
+func createEventHandler(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var event Event
+
+	err := json.NewDecoder(r.Body).Decode(&event)
+	if err != nil {
+		http.Error(w, "Неверный формат JSON", http.StatusBadRequest)
+		return
+	}
+
+	event.ID = uuid.New().String()
+	event.Timestamp = time.Now()
+
+	// Отправляем в очередь (неблокирующая отправка)
+	select {
+	case eventQueue <- event:
+		log.Printf("Событие добавлено в очередь: %+v", event)
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "accepted",
+			"id":     event.ID,
+		})
+	default:
+		http.Error(w, "Очередь переполнена", http.StatusServiceUnavailable)
 	}
 }
 
-func generateEvent(userID int) Event {
-	actions := []string{"вошел", "вышел", "купил", "посмотрел"}
-	return Event{
-		ID:        fmt.Sprintf("evt_%d", time.Now().UnixNano()),
-		UserID:    userID,
-		Action:    actions[rand.IntN(len(actions))],
-		Timestamp: time.Now(),
+// Воркер для обработки событий
+func startWorker(id int) {
+	for event := range eventQueue {
+		log.Printf(" Воркер %d: обрабатываю %s для пользователя %s",
+			id, event.Action, event.UserID)
+
+		time.Sleep(2 * time.Second)
+
+		log.Printf("   Воркер %d: завершил обработку %s", id, event.ID[:8])
 	}
 }
 
 func main() {
-	eventChannel := make(chan Event, 10)
-	defer close(eventChannel)
-	var wg sync.WaitGroup
-
-	for i := 0; i < 3; i++ {
-		go worker(i+1, eventChannel, &wg)
+	for i := 1; i <= 3; i++ {
+		go startWorker(i)
 	}
 
-	fmt.Println("Запущено 3 воркера")
+	r := mux.NewRouter()
+	r.HandleFunc("/api/events", createEventHandler).Methods("POST")
+	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 
-	for i := 0; i < 5; i++ {
-		event := generateEvent(1)
+		defer r.Body.Close()
 
-		wg.Add(1)
-		eventChannel <- event
+		healthStatus := map[string]interface{}{
+			"status":  "ok",
+			"time":    time.Now().Format(time.RFC3339),
+			"version": "1.0.0",
+		}
 
-		fmt.Printf(" Событие %d в очереди\n", i+1)
-		time.Sleep(300 * time.Millisecond)
-	}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(healthStatus)
+	})
 
-	wg.Wait()
+	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		html := `
+        <!DOCTYPE html>
+        <html>
+        <head>
+			<meta charset="UTF-8">	
+			<title>Тестер событий</title>
+		</head>
+        <body>
+            <h2>Отправить событие</h2>
+            <form id="eventForm">
+                User ID: <input type="text" id="userId" value="user123"><br>
+                Action: 
+                <select id="action">
+                    <option>login</option>
+                    <option>logout</option>
+                    <option>purchase</option>
+                    <option>view</option>
+                </select><br>
+                <button type="submit">Отправить</button>
+            </form>
+            <div id="result"></div>
+            
+            <script>
+                document.getElementById('eventForm').onsubmit = async (e) => {
+                    e.preventDefault();
+                    const response = await fetch('/api/events', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            user_id: document.getElementById('userId').value,
+                            action: document.getElementById('action').value
+                        })
+                    });
+                    const result = await response.json();
+                    document.getElementById('result').innerHTML = 
+                        '<pre>' + JSON.stringify(result, null, 2) + '</pre>';
+                }
+            </script>
+        </body>
+        </html>
+        `
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, html)
+	})
 
-	fmt.Println("Все события обработаны")
+	log.Println("Сервер запущен на :8080")
+	log.Fatal(http.ListenAndServe(":8080", r))
 }
