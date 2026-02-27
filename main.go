@@ -14,12 +14,13 @@ type Event struct {
 	Timestamp time.Time
 }
 
-func handleEvent(event Event, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	fmt.Printf("Начинаем обработку: %s\n", event.Action)
-	time.Sleep(2 * time.Second) // имитация долгой работы
-	fmt.Printf("Обработано: %s\n", event.Action)
+func worker(id int, events <-chan Event, wg *sync.WaitGroup) {
+	for event := range events {
+		fmt.Printf("  Воркер %d: начал обработку %s\n", id, event.Action)
+		time.Sleep(2 * time.Second) // работаем
+		fmt.Printf("  Воркер %d: закончил %s\n", id, event.Action)
+		wg.Done()
+	}
 }
 
 func generateEvent(userID int) Event {
@@ -33,23 +34,27 @@ func generateEvent(userID int) Event {
 }
 
 func main() {
-	fmt.Println("Программа запущена")
-
+	eventChannel := make(chan Event, 10)
+	defer close(eventChannel)
 	var wg sync.WaitGroup
 
-	start := time.Now()
+	for i := 0; i < 3; i++ {
+		go worker(i+1, eventChannel, &wg)
+	}
+
+	fmt.Println("Запущено 3 воркера")
 
 	for i := 0; i < 5; i++ {
 		event := generateEvent(1)
 
 		wg.Add(1)
-		go handleEvent(event, &wg)
+		eventChannel <- event
 
-		fmt.Println("Событие отправлено в обработку")
-		time.Sleep(500 * time.Millisecond)
+		fmt.Printf(" Событие %d в очереди\n", i+1)
+		time.Sleep(300 * time.Millisecond)
 	}
 
 	wg.Wait()
 
-	fmt.Printf("Всего затрачено времени: %v\n", time.Since(start))
+	fmt.Println("Все события обработаны")
 }
