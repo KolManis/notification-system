@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math/rand/v2"
+	"sync"
 	"time"
 )
 
@@ -13,11 +14,12 @@ type Event struct {
 	Timestamp time.Time
 }
 
-func handleEvent(event Event) {
-	fmt.Printf("[%s] Полльзователь %d: %s\n",
-		event.Timestamp.Format("15:04:05"),
-		event.UserID,
-		event.Action)
+func handleEvent(event Event, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	fmt.Printf("Начинаем обработку: %s\n", event.Action)
+	time.Sleep(2 * time.Second) // имитация долгой работы
+	fmt.Printf("Обработано: %s\n", event.Action)
 }
 
 func generateEvent(userID int) Event {
@@ -31,13 +33,23 @@ func generateEvent(userID int) Event {
 }
 
 func main() {
-	fmt.Println("🔧 Программа запущена")
+	fmt.Println("Программа запущена")
 
-	for i := 0; i < 50; i++ {
+	var wg sync.WaitGroup
+
+	start := time.Now()
+
+	for i := 0; i < 5; i++ {
 		event := generateEvent(1)
-		handleEvent(event)
-		time.Sleep(1 * time.Second)
+
+		wg.Add(1)
+		go handleEvent(event, &wg)
+
+		fmt.Println("Событие отправлено в обработку")
+		time.Sleep(500 * time.Millisecond)
 	}
 
-	fmt.Println("✅ Программа завершена")
+	wg.Wait()
+
+	fmt.Printf("Всего затрачено времени: %v\n", time.Since(start))
 }
